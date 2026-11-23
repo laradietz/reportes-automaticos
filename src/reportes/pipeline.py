@@ -10,22 +10,31 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 
-def ejecutar_etl(cfg: Config) -> dict:
+def ejecutar_etl(cfg: Config, incremental: bool = False) -> dict:
+    """ETL completo o incremental.
+
+    Incremental: procesa solo ventas con fecha >= última fecha cargada (marca de agua).
+    Se solapa el último día a propósito (datos tardíos); el upsert evita duplicados.
+    """
     t0 = time.perf_counter()
-    crudo = extract.extraer_todo(cfg.data_dir)
-    datos = transform.transformar(crudo)
     conn = load.conectar(cfg.db_path)
     try:
         load.inicializar(conn, cfg.sql_dir)
-        run_id = load.iniciar_run(conn, sum(len(d) for d in crudo.values()))
+        desde = load.marca_de_agua(conn) if incremental else None
+        ignorar = load.ids_ventas_rechazadas(conn) if desde else None
+        crudo = extract.extraer_todo(cfg.data_dir)
+        datos = transform.transformar(crudo, desde, ignorar)
+        leidas = sum(len(d) for d in crudo.values()) - datos["omitidas"]
+        run_id = load.iniciar_run(conn, leidas)
         stats = load.cargar(conn, datos, run_id)
     finally:
         conn.close()
-    leidas = sum(len(d) for d in crudo.values())
     tasa = stats["rechazos"] / leidas if leidas else 0.0
-    stats.update(run_id=run_id, segundos=round(time.perf_counter() - t0, 2),
+    stats.update(run_id=run_id, modo="incremental" if desde else "completa", desde=desde,
+                 omitidas=datos["omitidas"], segundos=round(time.perf_counter() - t0, 2),
                  tasa_rechazos=round(tasa, 4), alerta=tasa > cfg.umbral_rechazos)
-    log.info("ETL OK en %.2fs (run %s)", stats["segundos"], run_id)
+    log.info("ETL %s OK en %.2fs (run %s)%s", stats["modo"], stats["segundos"], run_id,
+             f" | desde {desde}, {datos['omitidas']} filas ya cargadas omitidas" if desde else "")
     if stats["alerta"]:
         log.warning("ALERTA DE CALIDAD: %.2f %% de filas rechazadas supera el umbral de %.2f %%",
                     tasa * 100, cfg.umbral_rechazos * 100)
@@ -42,10 +51,10 @@ def ejecutar_reportes(cfg: Config) -> dict:
         conn.close()
 
 
-def ejecutar_todo(cfg: Config, regenerar: bool = False) -> dict:
+def ejecutar_todo(cfg: Config, regenerar: bool = False, incremental: bool = False) -> dict:
     """Corrida completa. Si no hay datos fuente (o se pide), genera los sintéticos."""
     if regenerar or not (cfg.data_dir / "ventas.csv").exists():
         generate_data.generar(cfg.data_dir)
-    stats = ejecutar_etl(cfg)
+    stats = ejecutar_etl(cfg, incremental)
     archivos = ejecutar_reportes(cfg)
     return {"etl": stats, "reportes": {k: str(v) for k, v in archivos.items()}}

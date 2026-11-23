@@ -74,14 +74,27 @@ def limpiar_productos(raw: pd.DataFrame):
     return df, pd.concat([rech_dup, rech], ignore_index=True)
 
 
-def limpiar_ventas(raw: pd.DataFrame, clientes_ok: pd.DataFrame, productos_ok: pd.DataFrame):
+def limpiar_ventas(raw: pd.DataFrame, clientes_ok: pd.DataFrame, productos_ok: pd.DataFrame,
+                   desde: str | None = None, ignorar_ids: set[str] | None = None):
+    """Limpia ventas. En modo incremental (`desde` / `ignorar_ids`) omite lo ya procesado:
+    filas con fecha anterior a la marca de agua y filas ya rechazadas en corridas previas."""
     df = _vacio_a_na(raw)
+    fecha = pd.to_datetime(df["fecha"], format="%Y-%m-%d", errors="coerce")
+    omitidas = 0
+    if desde or ignorar_ids:
+        omitir = pd.Series(False, index=df.index)
+        if desde:
+            omitir |= fecha < pd.Timestamp(desde)  # fecha inválida (NaT) no cuenta como anterior
+        if ignorar_ids:
+            omitir |= df["id_venta"].isin(ignorar_ids)
+        omitidas = int(omitir.sum())
+        df, fecha = df[~omitir], fecha[~omitir]
+
     # Duplicados exactos del mismo id_venta: nos quedamos con la última aparición.
     duplicado = df.duplicated("id_venta", keep="last")
     rech_dup = _rechazos(df[duplicado], "ventas", "id_venta", "id_venta duplicado")
     df = df[~duplicado].copy()
-
-    df["fecha"] = pd.to_datetime(df["fecha"], format="%Y-%m-%d", errors="coerce")
+    df["fecha"] = fecha[~duplicado]
     for col in ("cantidad", "precio_unitario", "descuento"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["descuento"] = df["descuento"].fillna(0.0)  # sin dato = sin descuento (regla de negocio)
@@ -102,6 +115,7 @@ def limpiar_ventas(raw: pd.DataFrame, clientes_ok: pd.DataFrame, productos_ok: p
     df["importe_bruto"] = (df["cantidad"] * df["precio_unitario"]).round(2)
     df["importe_neto"] = (df["importe_bruto"] * (1 - df["descuento"])).round(2)
     df["fecha"] = df["fecha"].dt.strftime("%Y-%m-%d")
+    df.attrs["omitidas"] = omitidas
     return df, pd.concat([rech_dup, rech], ignore_index=True)
 
 
@@ -119,13 +133,15 @@ def construir_dim_fecha(fechas: pd.Series) -> pd.DataFrame:
     return cal
 
 
-def transformar(raw: dict[str, pd.DataFrame]) -> dict:
+def transformar(raw: dict[str, pd.DataFrame], desde: str | None = None,
+                ignorar_ids: set[str] | None = None) -> dict:
     clientes, r_cli = limpiar_clientes(raw["clientes"])
     productos, r_prod = limpiar_productos(raw["productos"])
-    ventas, r_ven = limpiar_ventas(raw["ventas"], clientes, productos)
+    ventas, r_ven = limpiar_ventas(raw["ventas"], clientes, productos, desde, ignorar_ids)
     rechazos = pd.concat([r_cli, r_prod, r_ven], ignore_index=True)
     log.info("Transformado: clientes=%d productos=%d ventas=%d | rechazos=%d",
              len(clientes), len(productos), len(ventas), len(rechazos))
     return {"clientes": clientes, "productos": productos, "ventas": ventas,
+            "omitidas": ventas.attrs.get("omitidas", 0),
             "fechas": construir_dim_fecha(ventas["fecha"]) if len(ventas) else pd.DataFrame(),
             "rechazos": rechazos}

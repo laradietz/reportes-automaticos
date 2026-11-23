@@ -101,3 +101,30 @@ def generar(destino: Path, filas: int = 12000, semilla: int = 42) -> dict:
     info = {"productos": len(productos), "clientes": len(clientes), "ventas": len(ventas)}
     log.info("Datos sintéticos generados en %s: %s", destino, info)
     return info
+
+
+def agregar_novedades(destino: Path, filas: int = 500, semilla: int = 99) -> dict:
+    """Agrega ventas válidas posteriores a la última fecha del CSV (simula operación nueva)."""
+    rng = np.random.default_rng(semilla)
+    ventas = pd.read_csv(destino / "ventas.csv", dtype=str, keep_default_na=False)
+    clientes = pd.read_csv(destino / "clientes.csv", dtype=str, keep_default_na=False)["id_cliente"].unique()
+    productos = pd.read_csv(destino / "productos.csv", dtype=str, keep_default_na=False)
+    fechas = pd.to_datetime(ventas["fecha"], format="%Y-%m-%d", errors="coerce").dropna()
+    primero = fechas.max() + pd.Timedelta(days=1)
+    ultimo_id = ventas["id_venta"].str.extract(r"(\d+)")[0].astype(int).max()
+    precios = productos.set_index("id_producto")["precio_lista"].astype(float)
+    ids_prod = rng.choice(productos["id_producto"], filas)
+    nuevas = pd.DataFrame({
+        "id_venta": [f"V-{ultimo_id + i + 1:06d}" for i in range(filas)],
+        "fecha": [(primero + pd.Timedelta(days=int(d))).strftime("%Y-%m-%d") for d in rng.integers(0, 20, filas)],
+        "id_cliente": rng.choice(clientes, filas),
+        "id_producto": ids_prod,
+        "vendedor": rng.choice(VENDEDORES, filas),
+        "cantidad": rng.integers(1, 10, filas).astype(str),
+        "precio_unitario": np.round(precios.loc[ids_prod].to_numpy() * rng.uniform(0.95, 1.05, filas), 2).astype(str),
+        "descuento": rng.choice(["0", "0.05", "0.10"], filas),
+    }).sort_values("fecha", kind="stable")
+    pd.concat([ventas, nuevas], ignore_index=True).to_csv(destino / "ventas.csv", index=False, encoding="utf-8")
+    info = {"ventas_agregadas": filas, "desde": nuevas["fecha"].min(), "hasta": nuevas["fecha"].max()}
+    log.info("Novedades agregadas a %s: %s", destino, info)
+    return info

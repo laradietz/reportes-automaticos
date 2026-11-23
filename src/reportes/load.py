@@ -38,6 +38,17 @@ def upsert(conn: sqlite3.Connection, tabla: str, df: pd.DataFrame, cols: list[st
     return len(df)
 
 
+def marca_de_agua(conn: sqlite3.Connection) -> str | None:
+    """Última fecha de venta cargada (None si el warehouse está vacío)."""
+    return conn.execute("SELECT MAX(fecha) FROM fact_ventas").fetchone()[0]
+
+
+def ids_ventas_rechazadas(conn: sqlite3.Connection) -> set[str]:
+    """id_venta rechazados en corridas anteriores (no se reprocesan en modo incremental)."""
+    filas = conn.execute("SELECT DISTINCT clave FROM etl_rechazos WHERE tabla = 'ventas' AND clave IS NOT NULL")
+    return {f[0] for f in filas}
+
+
 def iniciar_run(conn: sqlite3.Connection, leidas: int) -> str:
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     conn.execute("INSERT INTO etl_runs(run_id, inicio, filas_leidas, estado) VALUES (?,?,?, 'EN_CURSO')",

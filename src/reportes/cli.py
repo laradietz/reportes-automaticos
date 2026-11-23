@@ -21,10 +21,16 @@ def _parser() -> argparse.ArgumentParser:
     g = sub.add_parser("generar-datos", help="Genera CSV sintéticos con errores intencionales")
     g.add_argument("--filas", type=int, default=12000)
     g.add_argument("--semilla", type=int, default=42)
-    sub.add_parser("etl", help="Extrae, transforma y carga al warehouse SQLite")
+    n = sub.add_parser("agregar-novedades",
+                       help="Agrega ventas nuevas (noviembre) a los CSV para probar la carga incremental")
+    n.add_argument("--filas", type=int, default=500)
+    e = sub.add_parser("etl", help="Extrae, transforma y carga al warehouse SQLite")
+    e.add_argument("--incremental", action="store_true",
+                   help="Procesa solo ventas posteriores a la última fecha cargada")
     sub.add_parser("reportes", help="Genera los reportes Excel y HTML desde el warehouse")
     t = sub.add_parser("ejecutar", help="Corrida completa: (datos) + ETL + reportes")
     t.add_argument("--regenerar", action="store_true", help="Regenera los datos sintéticos antes de correr")
+    t.add_argument("--incremental", action="store_true", help="ETL incremental por fecha")
     return p
 
 
@@ -37,12 +43,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.comando == "generar-datos":
             res = generate_data.generar(cfg.data_dir, args.filas, args.semilla)
+        elif args.comando == "agregar-novedades":
+            res = generate_data.agregar_novedades(cfg.data_dir, args.filas)
         elif args.comando == "etl":
-            res = pipeline.ejecutar_etl(cfg)
+            res = pipeline.ejecutar_etl(cfg, args.incremental)
         elif args.comando == "reportes":
             res = {k: str(v) for k, v in pipeline.ejecutar_reportes(cfg).items()}
         else:
-            res = pipeline.ejecutar_todo(cfg, args.regenerar)
+            res = pipeline.ejecutar_todo(cfg, args.regenerar, args.incremental)
     except Exception as exc:  # código de salida != 0 para que el scheduler detecte el fallo
         log.exception("El pipeline falló: %s", exc)
         return 1
