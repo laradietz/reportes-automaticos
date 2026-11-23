@@ -1,0 +1,28 @@
+// Medidas DAX del tablero (tabla fact_ventas). dim_fecha está marcada como tabla de fechas.
+Ventas netas = SUM ( fact_ventas[importe_neto] )
+
+Ventas brutas = SUM ( fact_ventas[importe_bruto] )
+
+Ordenes = COUNTROWS ( fact_ventas )
+
+Unidades = SUM ( fact_ventas[cantidad] )
+
+Ticket promedio = DIVIDE ( SUM ( fact_ventas[importe_neto] ), COUNTROWS ( fact_ventas ) )
+
+Clientes activos = DISTINCTCOUNT ( fact_ventas[id_cliente] )
+
+Descuento efectivo % =
+    1 - DIVIDE ( SUM ( fact_ventas[importe_neto] ), SUM ( fact_ventas[importe_bruto] ) )
+
+// Último mes con datos contra el mes anterior
+Variación MoM % =
+VAR ultima = CALCULATE ( MAX ( fact_ventas[fecha] ), ALL ( dim_fecha ) )
+VAR ini    = DATE ( YEAR ( ultima ), MONTH ( ultima ), 1 )
+VAR actual =
+    CALCULATE ( [Ventas netas], ALL ( dim_fecha ), dim_fecha[fecha] >= ini, dim_fecha[fecha] <= ultima )
+VAR previo =
+    CALCULATE ( [Ventas netas], ALL ( dim_fecha ), dim_fecha[fecha] >= EDATE ( ini, -1 ), dim_fecha[fecha] < ini )
+RETURN
+    DIVIDE ( actual - previo, previo )
+
+Ventas acumuladas YTD = TOTALYTD ( [Ventas netas], dim_fecha[fecha] )

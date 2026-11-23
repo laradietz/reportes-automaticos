@@ -5,3 +5,6 @@ __pycache__/
 data/
 output/
 logs/
+
+# Power BI (el archivo local no se versiona)
+*.pbix
