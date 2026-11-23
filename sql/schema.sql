@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS dim_fecha (
     dia_semana TEXT NOT NULL
 );
 
+-- Cotización diaria del dólar oficial (fuente: API REST)
+CREATE TABLE IF NOT EXISTS dim_cotizacion (
+    fecha  TEXT PRIMARY KEY,
+    compra REAL NOT NULL,
+    venta  REAL NOT NULL CHECK (venta > 0)
+);
+
 CREATE TABLE IF NOT EXISTS fact_ventas (
     id_venta        TEXT PRIMARY KEY,
     fecha           TEXT NOT NULL REFERENCES dim_fecha(fecha),

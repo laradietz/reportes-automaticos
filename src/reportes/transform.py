@@ -28,8 +28,12 @@ def _rechazos(df: pd.DataFrame, tabla: str, clave: str, motivo: str) -> pd.DataF
         return pd.DataFrame(columns=COLUMNAS_RECHAZO)
     registros = [json.dumps({k: (None if pd.isna(v) else str(v)) for k, v in fila.items()}, ensure_ascii=False)
                  for fila in df.to_dict("records")]
-    return pd.DataFrame({"tabla": tabla, "clave": df[clave].astype(object).where(df[clave].notna(), None),
-                         "motivo": motivo, "registro": registros})
+    def _clave(v):
+        if pd.isna(v):
+            return None
+        return v.strftime("%Y-%m-%d") if isinstance(v, pd.Timestamp) else str(v)
+
+    return pd.DataFrame({"tabla": tabla, "clave": df[clave].map(_clave), "motivo": motivo, "registro": registros})
 
 
 def _aplicar_reglas(df: pd.DataFrame, tabla: str, clave: str,
@@ -119,6 +123,30 @@ def limpiar_ventas(raw: pd.DataFrame, clientes_ok: pd.DataFrame, productos_ok: p
     return df, pd.concat([rech_dup, rech], ignore_index=True)
 
 
+def limpiar_cotizaciones(raw: pd.DataFrame, desde: pd.Timestamp, hasta: pd.Timestamp):
+    """Cotizaciones del rango de ventas (con 10 días de margen para fines de semana/feriados)."""
+    df = _vacio_a_na(raw)
+    fecha = pd.to_datetime(df["fecha"], format="%Y-%m-%d", errors="coerce")
+    en_rango = fecha.isna() | ((fecha >= desde - pd.Timedelta(days=10)) & (fecha <= hasta))
+    df, fecha = df[en_rango].copy(), fecha[en_rango]
+    leidas = len(df)
+    df["fecha"] = fecha
+    duplicado = df.duplicated("fecha", keep="last") & df["fecha"].notna()
+    rech_dup = _rechazos(df[duplicado].assign(fecha=lambda d: d["fecha"].astype(str)), "cotizaciones", "fecha",
+                         "fecha duplicada")
+    df = df[~duplicado].copy()
+    for col in ("compra", "venta"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df, rech = _aplicar_reglas(df, "cotizaciones", "fecha", [
+        ("fecha inválida", lambda d: d["fecha"].isna()),
+        ("cotización de venta inválida", lambda d: ~(d["venta"] > 0)),
+    ])
+    df["compra"] = df["compra"].fillna(df["venta"])
+    df["fecha"] = df["fecha"].dt.strftime("%Y-%m-%d")
+    df.attrs["leidas"] = leidas
+    return df, pd.concat([rech_dup, rech], ignore_index=True)
+
+
 def construir_dim_fecha(fechas: pd.Series) -> pd.DataFrame:
     """Dimensión calendario continua entre la primera y la última fecha."""
     f = pd.to_datetime(fechas)
@@ -134,14 +162,19 @@ def construir_dim_fecha(fechas: pd.Series) -> pd.DataFrame:
 
 
 def transformar(raw: dict[str, pd.DataFrame], desde: str | None = None,
-                ignorar_ids: set[str] | None = None) -> dict:
+                ignorar_ids: set[str] | None = None, cotizaciones: pd.DataFrame | None = None) -> dict:
     clientes, r_cli = limpiar_clientes(raw["clientes"])
     productos, r_prod = limpiar_productos(raw["productos"])
     ventas, r_ven = limpiar_ventas(raw["ventas"], clientes, productos, desde, ignorar_ids)
-    rechazos = pd.concat([r_cli, r_prod, r_ven], ignore_index=True)
+    cot, r_cot = pd.DataFrame(columns=["fecha", "compra", "venta"]), pd.DataFrame(columns=COLUMNAS_RECHAZO)
+    if cotizaciones is not None and len(ventas):
+        fechas = pd.to_datetime(ventas["fecha"])
+        cot, r_cot = limpiar_cotizaciones(cotizaciones, fechas.min(), fechas.max())
+    rechazos = pd.concat([r_cli, r_prod, r_ven, r_cot], ignore_index=True)
     log.info("Transformado: clientes=%d productos=%d ventas=%d | rechazos=%d",
              len(clientes), len(productos), len(ventas), len(rechazos))
     return {"clientes": clientes, "productos": productos, "ventas": ventas,
             "omitidas": ventas.attrs.get("omitidas", 0),
+            "cotizaciones": cot, "cotizaciones_leidas": cot.attrs.get("leidas", 0),
             "fechas": construir_dim_fecha(ventas["fecha"]) if len(ventas) else pd.DataFrame(),
             "rechazos": rechazos}

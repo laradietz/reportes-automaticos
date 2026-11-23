@@ -23,8 +23,9 @@ def ejecutar_etl(cfg: Config, incremental: bool = False) -> dict:
         desde = load.marca_de_agua(conn) if incremental else None
         ignorar = load.ids_ventas_rechazadas(conn) if desde else None
         crudo = extract.extraer_todo(cfg.data_dir)
-        datos = transform.transformar(crudo, desde, ignorar)
-        leidas = sum(len(d) for d in crudo.values()) - datos["omitidas"]
+        cotizaciones = extract.extraer_cotizaciones(cfg.data_dir, cfg.url_cotizaciones) if cfg.url_cotizaciones else None
+        datos = transform.transformar(crudo, desde, ignorar, cotizaciones)
+        leidas = sum(len(d) for d in crudo.values()) - datos["omitidas"] + datos["cotizaciones_leidas"]
         run_id = load.iniciar_run(conn, leidas)
         stats = load.cargar(conn, datos, run_id)
     finally:

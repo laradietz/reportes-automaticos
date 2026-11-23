@@ -7,19 +7,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 RAIZ_PROYECTO = Path(__file__).resolve().parents[2]
+# API pública sin clave: cotización diaria del dólar oficial (Argentina)
+URL_COTIZACIONES = "https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial"
 
 
 @dataclass(frozen=True)
 class Config:
     raiz: Path = RAIZ_PROYECTO
     umbral_rechazos: float = 0.05  # fracción máxima tolerada de filas rechazadas
+    url_cotizaciones: str | None = None  # None = no consultar la API (por defecto en la librería y los tests)
 
     @classmethod
     def desde_entorno(cls, raiz: str | os.PathLike | None = None) -> "Config":
         """Prioridad: argumento > variable REPORTES_HOME > raíz del proyecto."""
         valor = raiz or os.environ.get("REPORTES_HOME")
         umbral = float(os.environ.get("REPORTES_UMBRAL_RECHAZOS", cls.umbral_rechazos))
-        return cls(Path(valor).resolve() if valor else RAIZ_PROYECTO, umbral)
+        url = os.environ.get("REPORTES_URL_COTIZACIONES", URL_COTIZACIONES)
+        if url.strip().lower() in ("", "off", "none"):
+            url = None
+        return cls(Path(valor).resolve() if valor else RAIZ_PROYECTO, umbral, url)
 
     @property
     def data_dir(self) -> Path:

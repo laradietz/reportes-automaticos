@@ -64,6 +64,7 @@ def cargar(conn: sqlite3.Connection, datos: dict, run_id: str) -> dict:
             n_cli = upsert(conn, "dim_cliente", datos["clientes"], ["id_cliente", "nombre", "email", "region", "segmento"], "id_cliente")
             n_prod = upsert(conn, "dim_producto", datos["productos"], ["id_producto", "nombre", "categoria", "precio_lista"], "id_producto")
             upsert(conn, "dim_fecha", datos["fechas"], ["fecha", "anio", "mes", "anio_mes", "trimestre", "dia_semana"], "fecha")
+            n_cot = upsert(conn, "dim_cotizacion", datos["cotizaciones"], ["fecha", "compra", "venta"], "fecha")
             n_ven = upsert(conn, "fact_ventas", datos["ventas"],
                            ["id_venta", "fecha", "id_cliente", "id_producto", "vendedor", "cantidad",
                             "precio_unitario", "descuento", "importe_bruto", "importe_neto"], "id_venta")
@@ -72,11 +73,12 @@ def cargar(conn: sqlite3.Connection, datos: dict, run_id: str) -> dict:
                 filas = [(run_id, *r) for r in _filas(rech, ["tabla", "clave", "motivo", "registro"])]
                 conn.executemany("INSERT INTO etl_rechazos(run_id,tabla,clave,motivo,registro) VALUES (?,?,?,?,?)", filas)
             conn.execute("UPDATE etl_runs SET fin=?, filas_cargadas=?, filas_rechazadas=?, estado='OK' WHERE run_id=?",
-                         (datetime.now().isoformat(timespec="seconds"), n_cli + n_prod + n_ven, len(rech), run_id))
+                         (datetime.now().isoformat(timespec="seconds"), n_cli + n_prod + n_ven + n_cot, len(rech), run_id))
     except Exception:
         conn.execute("UPDATE etl_runs SET fin=?, estado='ERROR' WHERE run_id=?",
                      (datetime.now().isoformat(timespec="seconds"), run_id))
         conn.commit()
         raise
-    log.info("Cargado: clientes=%d productos=%d ventas=%d rechazos=%d", n_cli, n_prod, n_ven, len(rech))
-    return {"clientes": n_cli, "productos": n_prod, "ventas": n_ven, "rechazos": len(rech)}
+    log.info("Cargado: clientes=%d productos=%d ventas=%d cotizaciones=%d rechazos=%d",
+             n_cli, n_prod, n_ven, n_cot, len(rech))
+    return {"clientes": n_cli, "productos": n_prod, "ventas": n_ven, "cotizaciones": n_cot, "rechazos": len(rech)}

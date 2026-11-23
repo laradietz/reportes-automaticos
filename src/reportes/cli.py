@@ -17,6 +17,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="reportes", description="Pipeline ETL de automatización de reportes")
     p.add_argument("--home", help="Carpeta raíz de datos/salidas (por defecto: REPORTES_HOME o la del proyecto)")
     p.add_argument("--umbral", type=float, help="Tasa máxima de rechazos tolerada (0-1). Si se supera, el código de salida es 2")
+    p.add_argument("--sin-api", action="store_true", help="No consultar la API de cotizaciones (reportes sin conversión a USD)")
     sub = p.add_subparsers(dest="comando", required=True)
     g = sub.add_parser("generar-datos", help="Genera CSV sintéticos con errores intencionales")
     g.add_argument("--filas", type=int, default=12000)
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.desde_entorno(args.home)
     if args.umbral is not None:
         cfg = dataclasses.replace(cfg, umbral_rechazos=args.umbral)
+    if args.sin_api:
+        cfg = dataclasses.replace(cfg, url_cotizaciones=None)
     configurar_logging(cfg)
     try:
         if args.comando == "generar-datos":

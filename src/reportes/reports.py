@@ -23,8 +23,11 @@ log = logging.getLogger(__name__)
 
 AZUL, GRIS = "#1f4e79", "#8a96a3"
 CONSULTAS = ["kpi_resumen", "ventas_mensuales", "top_productos", "ventas_region",
-             "ventas_categoria", "ranking_vendedores", "calidad_motivos", "ultima_corrida"]
-COLS_DINERO = {"ventas_netas", "ventas_mes_anterior", "acumulado", "ticket_promedio", "ventas_ultimo_mes"}
+             "ventas_categoria", "ranking_vendedores", "calidad_motivos", "ultima_corrida",
+             "kpi_usd", "ventas_usd_mensual"]
+COLS_DINERO = {"ventas_netas", "ventas_mes_anterior", "acumulado", "ticket_promedio", "ventas_ultimo_mes",
+               "tipo_cambio_promedio"}
+COLS_USD = {"ventas_usd"}
 COLS_PCT = {"variacion_pct", "participacion_pct", "acumulado_pct", "descuento_promedio_pct"}
 NOMBRES_HOJA = {"ventas_mensuales": "Mensual", "top_productos": "Top productos", "ventas_region": "Regiones",
                 "ventas_categoria": "Categorías", "ranking_vendedores": "Vendedores", "calidad_motivos": "Calidad de datos"}
@@ -32,6 +35,15 @@ NOMBRES_HOJA = {"ventas_mensuales": "Mensual", "top_productos": "Top productos",
 
 def money(x: float) -> str:
     return "$ " + f"{x:,.0f}".replace(",", ".")
+
+
+def usd(x: float) -> str:
+    return "US$ " + f"{x:,.0f}".replace(",", ".")
+
+
+def hay_usd(datos: dict[str, pd.DataFrame]) -> bool:
+    k = datos["kpi_usd"]
+    return not k.empty and pd.notna(k.loc[0, "ventas_usd"])
 
 
 def num(x: float) -> str:
@@ -51,12 +63,16 @@ def kpis(datos: dict[str, pd.DataFrame]) -> list[tuple[str, str, str]]:
     k = datos["kpi_resumen"].iloc[0]
     var = k["variacion_mom_pct"]
     detalle_mes = f"{k['ultimo_mes']}: " + ("sin mes previo" if pd.isna(var) else f"{var:+.1f}% vs mes anterior")
+    extra = []
+    if hay_usd(datos):
+        u = datos["kpi_usd"].iloc[0]
+        extra = [("Ventas netas en USD", usd(u["ventas_usd"]), f"dólar oficial promedio {money(u['tipo_cambio_promedio'])}")]
     return [
         ("Ventas netas", money(k["ventas_netas"]), detalle_mes),
         ("Órdenes", num(k["ordenes"]), f"{num(k['unidades'])} unidades"),
         ("Ticket promedio", money(k["ticket_promedio"]), "por orden"),
         ("Clientes activos", num(k["clientes_activos"]), f"descuento efectivo {k['descuento_efectivo_pct']:.1f}%"),
-    ]
+    ] + extra
 
 
 # ------------------------------------------------------------------ Excel
@@ -70,7 +86,7 @@ def _formatear_hoja(ws) -> None:
         letra = ws.cell(row=1, column=col).column_letter
         ancho = max([len(str(nombre))] + [len(str(c.value)) for c in ws[letra][1:] if c.value is not None]) + 3
         ws.column_dimensions[letra].width = min(ancho, 48)
-        fmt = '"$" #,##0' if nombre in COLS_DINERO else '0.0"%"' if nombre in COLS_PCT else None
+        fmt = '"US$" #,##0' if nombre in COLS_USD else '"$" #,##0' if nombre in COLS_DINERO else '0.0"%"' if nombre in COLS_PCT else None
         if fmt:
             for c in ws[letra][1:]:
                 c.number_format = fmt
@@ -83,7 +99,10 @@ def generar_excel(datos: dict[str, pd.DataFrame], ruta: Path) -> Path:
     resumen = pd.DataFrame([(a, b, c) for a, b, c in kpis(datos)], columns=["Indicador", "Valor", "Detalle"])
     with pd.ExcelWriter(ruta, engine="openpyxl") as xw:
         resumen.to_excel(xw, sheet_name="Resumen", index=False)
-        for clave, hoja in NOMBRES_HOJA.items():
+        hojas = dict(NOMBRES_HOJA)
+        if hay_usd(datos):
+            hojas["ventas_usd_mensual"] = "Ventas USD"
+        for clave, hoja in hojas.items():
             datos[clave].to_excel(xw, sheet_name=hoja, index=False)
         for ws in xw.book.worksheets:
             _formatear_hoja(ws)
@@ -148,6 +167,8 @@ def _tabla(df: pd.DataFrame) -> str:
     def fmt(col, v):
         if pd.isna(v):
             return "—"
+        if col in COLS_USD:
+            return usd(v)
         if col in COLS_DINERO:
             return money(v)
         if col in COLS_PCT:
@@ -199,6 +220,7 @@ def generar_html(datos: dict[str, pd.DataFrame], ruta: Path) -> Path:
         sec("Top 10 productos (Pareto)", graf("productos", "Top 10 de productos por ventas") + _tabla(datos["top_productos"])),
         sec("Ventas por región", graf("regiones", "Participación por región") + _tabla(datos["ventas_region"])),
         sec("Ventas por categoría", _tabla(datos["ventas_categoria"])),
+        sec("Ventas en dólares (API de cotizaciones)", _tabla(datos["ventas_usd_mensual"])) if hay_usd(datos) else "",
         sec("Ranking de vendedores", _tabla(datos["ranking_vendedores"])),
         sec("Calidad de datos: registros rechazados", _tabla(datos["calidad_motivos"]) if not datos["calidad_motivos"].empty
             else "<p>Sin rechazos en la última corrida.</p>"),
@@ -221,7 +243,7 @@ def generar_reportes(conn: sqlite3.Connection, sql_dir: Path, out_dir: Path) -> 
 
 
 # ------------------------------------------------------------------ Power BI
-TABLAS_MODELO = ["fact_ventas", "dim_cliente", "dim_producto", "dim_fecha"]
+TABLAS_MODELO = ["fact_ventas", "dim_cliente", "dim_producto", "dim_fecha", "dim_cotizacion"]
 
 
 def exportar_powerbi(conn: sqlite3.Connection, out_dir: Path, db_path: Path | None = None) -> Path:
@@ -232,20 +254,20 @@ def exportar_powerbi(conn: sqlite3.Connection, out_dir: Path, db_path: Path | No
     tablas = {t: pd.read_sql_query(f"SELECT * FROM {t}", conn) for t in TABLAS_MODELO}
     if tablas["fact_ventas"].empty:
         raise RuntimeError("No hay ventas cargadas en el warehouse: ejecutá primero el ETL.")
-    for t, df in tablas.items():
-        df["fecha"] = pd.to_datetime(df["fecha"]) if "fecha" in df else None
-        if df["fecha"].isna().all():
-            df.drop(columns="fecha", inplace=True)
+    for df in tablas.values():
+        if "fecha" in df:
+            df["fecha"] = pd.to_datetime(df["fecha"])
     for t, df in tablas.items():
         df.to_csv(carpeta / f"{t}.csv", index=False, encoding="utf-8-sig", date_format="%Y-%m-%d")
     with pd.ExcelWriter(carpeta / "modelo_ventas.xlsx", engine="openpyxl", date_format="yyyy-mm-dd") as xw:
         for t, df in tablas.items():
             df.to_excel(xw, sheet_name=t, index=False)
-            ws = xw.book[t]
+            if df.empty:  # una tabla de Excel necesita al menos una fila de datos
+                continue
             # Tabla de Excel real: Power BI la detecta con sus encabezados ya promovidos
             tabla = Table(displayName=t, ref=f"A1:{get_column_letter(df.shape[1])}{len(df) + 1}")
             tabla.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
-            ws.add_table(tabla)
+            xw.book[t].add_table(tabla)
     if db_path is not None:
         (carpeta / "conectar_sqlite.py").write_text(_script_powerbi(db_path), encoding="utf-8")
     log.info("Modelo para Power BI exportado en %s", carpeta)
