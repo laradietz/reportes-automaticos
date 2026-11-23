@@ -21,8 +21,14 @@ def ejecutar_etl(cfg: Config) -> dict:
         stats = load.cargar(conn, datos, run_id)
     finally:
         conn.close()
-    stats.update(run_id=run_id, segundos=round(time.perf_counter() - t0, 2))
+    leidas = sum(len(d) for d in crudo.values())
+    tasa = stats["rechazos"] / leidas if leidas else 0.0
+    stats.update(run_id=run_id, segundos=round(time.perf_counter() - t0, 2),
+                 tasa_rechazos=round(tasa, 4), alerta=tasa > cfg.umbral_rechazos)
     log.info("ETL OK en %.2fs (run %s)", stats["segundos"], run_id)
+    if stats["alerta"]:
+        log.warning("ALERTA DE CALIDAD: %.2f %% de filas rechazadas supera el umbral de %.2f %%",
+                    tasa * 100, cfg.umbral_rechazos * 100)
     return stats
 
 

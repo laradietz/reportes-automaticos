@@ -183,7 +183,8 @@ def generar_html(datos: dict[str, pd.DataFrame], ruta: Path) -> Path:
     img = _graficos(datos)
     c = datos["ultima_corrida"]
     corrida = (f"Corrida ETL {c.loc[0, 'run_id']}: {num(c.loc[0, 'filas_cargadas'])} registros cargados, "
-               f"{num(c.loc[0, 'filas_rechazadas'])} rechazados.") if not c.empty else ""
+               f"{num(c.loc[0, 'filas_rechazadas'])} rechazados "
+               f"({100 * c.loc[0, 'filas_rechazadas'] / c.loc[0, 'filas_leidas']:.1f} % de lo leído).") if not c.empty else ""
     tarjetas = "".join(f"<div class='kpi'><small>{html.escape(a)}</small><b>{html.escape(b)}</b><small>{html.escape(d)}</small></div>"
                        for a, b, d in kpis(datos))
 

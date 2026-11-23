@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import sys
@@ -15,6 +16,7 @@ log = logging.getLogger("reportes")
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="reportes", description="Pipeline ETL de automatización de reportes")
     p.add_argument("--home", help="Carpeta raíz de datos/salidas (por defecto: REPORTES_HOME o la del proyecto)")
+    p.add_argument("--umbral", type=float, help="Tasa máxima de rechazos tolerada (0-1). Si se supera, el código de salida es 2")
     sub = p.add_subparsers(dest="comando", required=True)
     g = sub.add_parser("generar-datos", help="Genera CSV sintéticos con errores intencionales")
     g.add_argument("--filas", type=int, default=12000)
@@ -29,6 +31,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     cfg = Config.desde_entorno(args.home)
+    if args.umbral is not None:
+        cfg = dataclasses.replace(cfg, umbral_rechazos=args.umbral)
     configurar_logging(cfg)
     try:
         if args.comando == "generar-datos":
@@ -43,7 +47,8 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("El pipeline falló: %s", exc)
         return 1
     print(json.dumps(res, ensure_ascii=False, indent=2))
-    return 0
+    etl = res.get("etl", res)
+    return 2 if isinstance(etl, dict) and etl.get("alerta") else 0
 
 
 if __name__ == "__main__":

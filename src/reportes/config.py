@@ -12,12 +12,14 @@ RAIZ_PROYECTO = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True)
 class Config:
     raiz: Path = RAIZ_PROYECTO
+    umbral_rechazos: float = 0.05  # fracción máxima tolerada de filas rechazadas
 
     @classmethod
     def desde_entorno(cls, raiz: str | os.PathLike | None = None) -> "Config":
         """Prioridad: argumento > variable REPORTES_HOME > raíz del proyecto."""
         valor = raiz or os.environ.get("REPORTES_HOME")
-        return cls(Path(valor).resolve() if valor else RAIZ_PROYECTO)
+        umbral = float(os.environ.get("REPORTES_UMBRAL_RECHAZOS", cls.umbral_rechazos))
+        return cls(Path(valor).resolve() if valor else RAIZ_PROYECTO, umbral)
 
     @property
     def data_dir(self) -> Path:
