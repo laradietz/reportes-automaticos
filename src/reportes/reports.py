@@ -5,7 +5,6 @@ import base64
 import html
 import io
 import logging
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +16,8 @@ import pandas as pd  # noqa: E402
 from openpyxl.chart import BarChart, Reference  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 from openpyxl.worksheet.table import Table, TableStyleInfo  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+from sqlalchemy.engine import Connection  # noqa: E402
 from openpyxl.styles import Alignment, Font, PatternFill  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -50,9 +51,10 @@ def num(x: float) -> str:
     return f"{x:,.0f}".replace(",", ".")
 
 
-def cargar_datos(conn: sqlite3.Connection, sql_dir: Path) -> dict[str, pd.DataFrame]:
+def cargar_datos(conn: Connection, sql_dir: Path) -> dict[str, pd.DataFrame]:
     """Cada reporte es una consulta .sql versionada: la lógica de negocio vive en SQL."""
-    datos = {n: pd.read_sql_query((sql_dir / "queries" / f"{n}.sql").read_text(encoding="utf-8"), conn) for n in CONSULTAS}
+    datos = {n: pd.read_sql_query(text((sql_dir / "queries" / f"{n}.sql").read_text(encoding="utf-8")), conn)
+             for n in CONSULTAS}
     if datos["kpi_resumen"].empty or pd.isna(datos["kpi_resumen"].loc[0, "ventas_netas"]):
         raise RuntimeError("No hay ventas cargadas en el warehouse: ejecutá primero el ETL.")
     return datos
@@ -235,7 +237,7 @@ def generar_html(datos: dict[str, pd.DataFrame], ruta: Path) -> Path:
     return ruta
 
 
-def generar_reportes(conn: sqlite3.Connection, sql_dir: Path, out_dir: Path) -> dict[str, Path]:
+def generar_reportes(conn: Connection, sql_dir: Path, out_dir: Path) -> dict[str, Path]:
     datos = cargar_datos(conn, sql_dir)
     sello = datetime.now().strftime("%Y%m%d")
     return {"excel": generar_excel(datos, out_dir / f"reporte_ventas_{sello}.xlsx"),
@@ -246,12 +248,12 @@ def generar_reportes(conn: sqlite3.Connection, sql_dir: Path, out_dir: Path) -> 
 TABLAS_MODELO = ["fact_ventas", "dim_cliente", "dim_producto", "dim_fecha", "dim_cotizacion"]
 
 
-def exportar_powerbi(conn: sqlite3.Connection, out_dir: Path, db_path: Path | None = None) -> Path:
+def exportar_powerbi(conn: Connection, out_dir: Path, db_path: Path | None = None) -> Path:
     """Exporta el modelo en estrella con nombres de archivo FIJOS (sin fecha),
     para que Power BI pueda actualizar la fuente con "Actualizar" sin reconfigurar."""
     carpeta = out_dir / "powerbi"
     carpeta.mkdir(parents=True, exist_ok=True)
-    tablas = {t: pd.read_sql_query(f"SELECT * FROM {t}", conn) for t in TABLAS_MODELO}
+    tablas = {t: pd.read_sql_query(text(f"SELECT * FROM {t}"), conn) for t in TABLAS_MODELO}
     if tablas["fact_ventas"].empty:
         raise RuntimeError("No hay ventas cargadas en el warehouse: ejecutá primero el ETL.")
     for df in tablas.values():
@@ -286,6 +288,7 @@ fact_ventas = pd.read_sql_query("SELECT * FROM fact_ventas", _con, parse_dates=[
 dim_cliente = pd.read_sql_query("SELECT * FROM dim_cliente", _con)
 dim_producto = pd.read_sql_query("SELECT * FROM dim_producto", _con)
 dim_fecha = pd.read_sql_query("SELECT * FROM dim_fecha", _con, parse_dates=["fecha"])
+dim_cotizacion = pd.read_sql_query("SELECT * FROM dim_cotizacion", _con, parse_dates=["fecha"])
 etl_runs = pd.read_sql_query("SELECT * FROM etl_runs", _con)
 etl_rechazos = pd.read_sql_query("SELECT * FROM etl_rechazos", _con)
 _con.close()

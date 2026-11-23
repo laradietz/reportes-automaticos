@@ -17,6 +17,8 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="reportes", description="Pipeline ETL de automatización de reportes")
     p.add_argument("--home", help="Carpeta raíz de datos/salidas (por defecto: REPORTES_HOME o la del proyecto)")
     p.add_argument("--umbral", type=float, help="Tasa máxima de rechazos tolerada (0-1). Si se supera, el código de salida es 2")
+    p.add_argument("--db-url", help="Base de datos (URL SQLAlchemy), p. ej. postgresql://usuario:clave@host/base. "
+                                    "Por defecto: REPORTES_DB_URL o SQLite en data/warehouse.db")
     p.add_argument("--sin-api", action="store_true", help="No consultar la API de cotizaciones (reportes sin conversión a USD)")
     sub = p.add_subparsers(dest="comando", required=True)
     g = sub.add_parser("generar-datos", help="Genera CSV sintéticos con errores intencionales")
@@ -25,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     n = sub.add_parser("agregar-novedades",
                        help="Agrega ventas nuevas (noviembre) a los CSV para probar la carga incremental")
     n.add_argument("--filas", type=int, default=500)
-    e = sub.add_parser("etl", help="Extrae, transforma y carga al warehouse SQLite")
+    e = sub.add_parser("etl", help="Extrae, transforma y carga al warehouse")
     e.add_argument("--incremental", action="store_true",
                    help="Procesa solo ventas posteriores a la última fecha cargada")
     sub.add_parser("reportes", help="Genera los reportes Excel y HTML desde el warehouse")
@@ -37,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    cfg = Config.desde_entorno(args.home)
+    cfg = Config.desde_entorno(args.home, args.db_url)
     if args.umbral is not None:
         cfg = dataclasses.replace(cfg, umbral_rechazos=args.umbral)
     if args.sin_api:

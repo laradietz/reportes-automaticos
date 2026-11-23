@@ -11,6 +11,20 @@ on:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,10 +32,16 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -e ".[dev]"
-      - name: Tests
+      - name: Tests (SQLite y PostgreSQL)
         run: pytest -q
-      - name: Ejecutar pipeline (ETL + reportes)
+      - name: Pipeline completo sobre SQLite
         run: python -m reportes ejecutar --regenerar
+      - name: Pipeline completo sobre PostgreSQL
+        run: python -m reportes --db-url "$PG_URL" ejecutar
+      - name: Carga incremental sobre PostgreSQL
+        run: |
+          python -m reportes agregar-novedades --filas 300
+          python -m reportes --db-url "$PG_URL" etl --incremental
       - name: Publicar reportes como artefacto
         uses: actions/upload-artifact@v4
         with:

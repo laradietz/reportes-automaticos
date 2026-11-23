@@ -1,4 +1,5 @@
 -- Top 15 productos con ranking y % acumulado (análisis de Pareto 80/20).
+-- Se usa LIMIT y no WHERE ranking <= 15: PostgreSQL 16.2 ignora ese filtro si hay otra función de ventana.
 WITH p AS (
     SELECT pr.id_producto, pr.nombre, pr.categoria,
            SUM(v.cantidad)                AS unidades,
@@ -15,5 +16,5 @@ r AS (
 )
 SELECT ranking, nombre, categoria, unidades, ventas_netas, acumulado_pct
 FROM r
-WHERE ranking <= 15
-ORDER BY ranking;
+ORDER BY ranking
+LIMIT 15;

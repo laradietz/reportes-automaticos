@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "reportes-automaticos"
 version = "1.0.0"
-description = "Pipeline ETL (Python + SQL) que extrae, procesa y genera reportes automáticamente"
+description = "Pipeline ETL (Python + SQL) que extrae, procesa y genera reportes automáticamente (SQLite o PostgreSQL)"
 requires-python = ">=3.10"
-dependencies = ["pandas>=2.0", "openpyxl>=3.1", "matplotlib>=3.7"]
+dependencies = ["pandas>=2.0", "openpyxl>=3.1", "matplotlib>=3.7", "sqlalchemy>=2.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+postgres = ["psycopg2-binary>=2.9"]
+dev = ["pytest>=7", "psycopg2-binary>=2.9", "pgserver"]
 
 [project.scripts]
 reportes = "reportes.cli:main"

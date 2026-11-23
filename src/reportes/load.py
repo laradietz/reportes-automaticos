@@ -1,25 +1,24 @@
-"""L — Carga. Upserts idempotentes en SQLite: re-ejecutar el ETL no duplica datos."""
+"""L — Carga. Upserts idempotentes (SQLite o PostgreSQL): re-ejecutar el ETL no duplica datos."""
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from sqlalchemy import text
+from sqlalchemy.engine import Connection, Engine
+
+from . import db
 
 log = logging.getLogger(__name__)
 
 
-def conectar(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-def inicializar(conn: sqlite3.Connection, sql_dir: Path) -> None:
-    conn.executescript((sql_dir / "schema.sql").read_text(encoding="utf-8"))
+def inicializar(engine: Engine, sql_dir: Path) -> None:
+    """Crea las tablas si no existen, con el esquema del motor en uso."""
+    archivo = "schema_postgres.sql" if db.es_postgres(engine) else "schema_sqlite.sql"
+    with engine.begin() as conn:
+        db.ejecutar_script(conn, (sql_dir / archivo).read_text(encoding="utf-8"))
 
 
 def _filas(df: pd.DataFrame, cols: list[str]) -> list[list]:
@@ -27,40 +26,48 @@ def _filas(df: pd.DataFrame, cols: list[str]) -> list[list]:
     return sub.where(sub.notna(), None).values.tolist()
 
 
-def upsert(conn: sqlite3.Connection, tabla: str, df: pd.DataFrame, cols: list[str], pk: str) -> int:
+def upsert(conn: Connection, tabla: str, df: pd.DataFrame, cols: list[str], pk: str) -> int:
+    """INSERT ... ON CONFLICT DO UPDATE: sintaxis común a SQLite y PostgreSQL."""
     if df.empty:
         return 0
-    marcas = ",".join("?" * len(cols))
-    actualiza = ",".join(f"{c}=excluded.{c}" for c in cols if c != pk)
-    sql = (f"INSERT INTO {tabla} ({','.join(cols)}) VALUES ({marcas}) "
-           f"ON CONFLICT({pk}) DO UPDATE SET {actualiza}")
-    conn.executemany(sql, _filas(df, cols))
+    actualiza = ", ".join(f"{c} = excluded.{c}" for c in cols if c != pk)
+    sql = text(f"INSERT INTO {tabla} ({', '.join(cols)}) VALUES ({', '.join(':' + c for c in cols)}) "
+               f"ON CONFLICT ({pk}) DO UPDATE SET {actualiza}")
+    conn.execute(sql, [dict(zip(cols, fila)) for fila in _filas(df, cols)])
     return len(df)
 
 
-def marca_de_agua(conn: sqlite3.Connection) -> str | None:
-    """Última fecha de venta cargada (None si el warehouse está vacío)."""
-    return conn.execute("SELECT MAX(fecha) FROM fact_ventas").fetchone()[0]
+def marca_de_agua(engine: Engine) -> str | None:
+    """Última fecha de venta cargada, como 'yyyy-mm-dd' (None si el warehouse está vacío)."""
+    with engine.connect() as conn:
+        ultima = conn.execute(text("SELECT MAX(fecha) FROM fact_ventas")).scalar()
+    return None if ultima is None else str(ultima)
 
 
-def ids_ventas_rechazadas(conn: sqlite3.Connection) -> set[str]:
+def ids_ventas_rechazadas(engine: Engine) -> set[str]:
     """id_venta rechazados en corridas anteriores (no se reprocesan en modo incremental)."""
-    filas = conn.execute("SELECT DISTINCT clave FROM etl_rechazos WHERE tabla = 'ventas' AND clave IS NOT NULL")
-    return {f[0] for f in filas}
+    with engine.connect() as conn:
+        filas = conn.execute(text("SELECT DISTINCT clave FROM etl_rechazos WHERE tabla = 'ventas' AND clave IS NOT NULL"))
+        return {f[0] for f in filas}
 
 
-def iniciar_run(conn: sqlite3.Connection, leidas: int) -> str:
+def _ahora() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def iniciar_run(engine: Engine, leidas: int) -> str:
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    conn.execute("INSERT INTO etl_runs(run_id, inicio, filas_leidas, estado) VALUES (?,?,?, 'EN_CURSO')",
-                 (run_id, datetime.now().isoformat(timespec="seconds"), leidas))
-    conn.commit()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO etl_runs (run_id, inicio, filas_leidas, estado) "
+                          "VALUES (:run_id, :inicio, :leidas, 'EN_CURSO')"),
+                     {"run_id": run_id, "inicio": _ahora(), "leidas": leidas})
     return run_id
 
 
-def cargar(conn: sqlite3.Connection, datos: dict, run_id: str) -> dict:
+def cargar(engine: Engine, datos: dict, run_id: str) -> dict:
     """Carga todo en UNA transacción: o entra completo o no entra nada."""
     try:
-        with conn:  # commit/rollback automático
+        with engine.begin() as conn:  # commit al salir; rollback ante cualquier excepción
             n_cli = upsert(conn, "dim_cliente", datos["clientes"], ["id_cliente", "nombre", "email", "region", "segmento"], "id_cliente")
             n_prod = upsert(conn, "dim_producto", datos["productos"], ["id_producto", "nombre", "categoria", "precio_lista"], "id_producto")
             upsert(conn, "dim_fecha", datos["fechas"], ["fecha", "anio", "mes", "anio_mes", "trimestre", "dia_semana"], "fecha")
@@ -70,14 +77,18 @@ def cargar(conn: sqlite3.Connection, datos: dict, run_id: str) -> dict:
                             "precio_unitario", "descuento", "importe_bruto", "importe_neto"], "id_venta")
             rech = datos["rechazos"]
             if not rech.empty:
-                filas = [(run_id, *r) for r in _filas(rech, ["tabla", "clave", "motivo", "registro"])]
-                conn.executemany("INSERT INTO etl_rechazos(run_id,tabla,clave,motivo,registro) VALUES (?,?,?,?,?)", filas)
-            conn.execute("UPDATE etl_runs SET fin=?, filas_cargadas=?, filas_rechazadas=?, estado='OK' WHERE run_id=?",
-                         (datetime.now().isoformat(timespec="seconds"), n_cli + n_prod + n_ven + n_cot, len(rech), run_id))
+                filas = [dict(zip(("run_id", "tabla", "clave", "motivo", "registro"), (run_id, *r)))
+                         for r in _filas(rech, ["tabla", "clave", "motivo", "registro"])]
+                conn.execute(text("INSERT INTO etl_rechazos (run_id, tabla, clave, motivo, registro) "
+                                  "VALUES (:run_id, :tabla, :clave, :motivo, :registro)"), filas)
+            conn.execute(text("UPDATE etl_runs SET fin = :fin, filas_cargadas = :cargadas, "
+                              "filas_rechazadas = :rechazadas, estado = 'OK' WHERE run_id = :run_id"),
+                         {"fin": _ahora(), "cargadas": n_cli + n_prod + n_ven + n_cot,
+                          "rechazadas": len(rech), "run_id": run_id})
     except Exception:
-        conn.execute("UPDATE etl_runs SET fin=?, estado='ERROR' WHERE run_id=?",
-                     (datetime.now().isoformat(timespec="seconds"), run_id))
-        conn.commit()
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE etl_runs SET fin = :fin, estado = 'ERROR' WHERE run_id = :run_id"),
+                         {"fin": _ahora(), "run_id": run_id})
         raise
     log.info("Cargado: clientes=%d productos=%d ventas=%d cotizaciones=%d rechazos=%d",
              n_cli, n_prod, n_ven, n_cot, len(rech))

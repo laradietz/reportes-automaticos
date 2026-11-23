@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 
-from . import extract, generate_data, load, reports, transform
+from . import db, extract, generate_data, load, reports, transform
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -17,19 +17,20 @@ def ejecutar_etl(cfg: Config, incremental: bool = False) -> dict:
     Se solapa el último día a propósito (datos tardíos); el upsert evita duplicados.
     """
     t0 = time.perf_counter()
-    conn = load.conectar(cfg.db_path)
+    engine = db.crear_engine(cfg.url_db)
     try:
-        load.inicializar(conn, cfg.sql_dir)
-        desde = load.marca_de_agua(conn) if incremental else None
-        ignorar = load.ids_ventas_rechazadas(conn) if desde else None
+        log.info("Base de datos: %s", db.descripcion(engine))
+        load.inicializar(engine, cfg.sql_dir)
+        desde = load.marca_de_agua(engine) if incremental else None
+        ignorar = load.ids_ventas_rechazadas(engine) if desde else None
         crudo = extract.extraer_todo(cfg.data_dir)
         cotizaciones = extract.extraer_cotizaciones(cfg.data_dir, cfg.url_cotizaciones) if cfg.url_cotizaciones else None
         datos = transform.transformar(crudo, desde, ignorar, cotizaciones)
         leidas = sum(len(d) for d in crudo.values()) - datos["omitidas"] + datos["cotizaciones_leidas"]
-        run_id = load.iniciar_run(conn, leidas)
-        stats = load.cargar(conn, datos, run_id)
+        run_id = load.iniciar_run(engine, leidas)
+        stats = load.cargar(engine, datos, run_id)
     finally:
-        conn.close()
+        engine.dispose()
     tasa = stats["rechazos"] / leidas if leidas else 0.0
     stats.update(run_id=run_id, modo="incremental" if desde else "completa", desde=desde,
                  omitidas=datos["omitidas"], segundos=round(time.perf_counter() - t0, 2),
@@ -43,13 +44,15 @@ def ejecutar_etl(cfg: Config, incremental: bool = False) -> dict:
 
 
 def ejecutar_reportes(cfg: Config) -> dict:
-    conn = load.conectar(cfg.db_path)
+    engine = db.crear_engine(cfg.url_db)
     try:
-        archivos = reports.generar_reportes(conn, cfg.sql_dir, cfg.out_dir)
-        archivos["powerbi"] = reports.exportar_powerbi(conn, cfg.out_dir, cfg.db_path)
+        with engine.connect() as conn:
+            archivos = reports.generar_reportes(conn, cfg.sql_dir, cfg.out_dir)
+            archivos["powerbi"] = reports.exportar_powerbi(
+                conn, cfg.out_dir, None if db.es_postgres(engine) else cfg.db_path)
         return archivos
     finally:
-        conn.close()
+        engine.dispose()
 
 
 def ejecutar_todo(cfg: Config, regenerar: bool = False, incremental: bool = False) -> dict:
